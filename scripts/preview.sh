@@ -131,6 +131,11 @@ if test "${SESSION}" == '*Last*'; then
 	fi
 fi
 
+# Auto-detect window mode from session:window_index format
+if [[ "${mode}" == "single" ]] && [[ "${SESSION}" == *:* ]]; then
+	mode="window"
+fi
+
 case "${mode}" in
 single) single_mode "${SESSION}" ;;
 tree) tree_mode "${SESSION}" ;;

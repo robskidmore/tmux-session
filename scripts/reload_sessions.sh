@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$CURRENT_DIR/git-branch.sh"
 
-CURRENT_SESSION=$(tmux display-message -p '#S')
-SESSIONS=$(tmux list-sessions | sed -E 's/:.*$//')
+ordered=$(tmux list-sessions -F "#{session_id} #{session_name}" | sort -n | awk '{print $2}')
 
-if [[ $(echo "$SESSIONS" | wc -l) -gt 1 ]]; then
-	SESSIONS=$(echo "$SESSIONS" | grep -v "$CURRENT_SESSION")
-else
-	true
-fi
+while IFS= read -r session; do
+	[[ -z "$session" ]] && continue
+	window_count=$(tmux list-windows -t "$session" 2>/dev/null | wc -l | tr -d ' ')
+	attached=$(tmux display-message -p -t "$session" "#{session_attached}" 2>/dev/null)
+	suffix=""
+	[[ "$attached" == "1" ]] && suffix=" (attached)"
 
-GIT_BRANCH=$(tmux show-option -gqv "@sessionx-git-branch")
-if [[ "$GIT_BRANCH" == "on" ]]; then
-	format_sessions_with_git_branch "$SESSIONS"
-else
-	echo "$SESSIONS"
-fi
+	printf "%s\t%s: %s windows%s\n" "$session" "$session" "$window_count" "$suffix"
+
+	tmux list-windows -t "$session" -F "#{window_index}|#{window_name}" 2>/dev/null | \
+		while IFS='|' read -r idx name; do
+			printf "%s:%s\t  ↳ %s\n" "$session" "$idx" "$name"
+		done
+done <<< "$ordered"

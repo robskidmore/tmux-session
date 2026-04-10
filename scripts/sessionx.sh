@@ -9,16 +9,16 @@ source "$CURRENT_DIR/fzf-marks.sh"
 source "$CURRENT_DIR/git-branch.sh"
 
 get_sorted_sessions() {
-	last_session=$(tmux display-message -p '#{client_last_session}')
-	sessions=$(tmux list-sessions | sed -E 's/:.*$//' | grep -Fxv "$last_session")
+	local sessions
+	sessions=$(tmux list-sessions -F "#{session_id} #{session_name}" | sort -n | awk '{print $2}')
+	local filtered_sessions
 	filtered_sessions=$(tmux show-option -gqv @sessionx-_filtered-sessions)
 	if [[ -n "$filtered_sessions" ]]; then
-	  filtered_and_piped=$(echo "$filtered_sessions" | sed -E 's/,/|/g')
-	  sessions=$(echo "$sessions" | grep -Ev "$filtered_and_piped")
+		local filtered_and_piped
+		filtered_and_piped=$(echo "$filtered_sessions" | sed -E 's/,/|/g')
+		sessions=$(echo "$sessions" | grep -Ev "$filtered_and_piped")
 	fi
-	local sorted
-	sorted=$(echo -e "$sessions\n$last_session" | awk '!seen[$0]++')
-	echo "$sorted"
+	echo "$sessions"
 }
 
 tmux_option_or_fallback() {
@@ -31,17 +31,24 @@ tmux_option_or_fallback() {
 }
 
 input() {
-	default_window_mode=$(tmux show-option -gqv @sessionx-_window-mode)
-	if [[ "$default_window_mode" == "on" ]]; then
-		tmux list-windows -a -F '#{session_name}:#{window_index} #{window_name}'
-	else
-		filter_current_session=$(tmux show-option -gqv @sessionx-_filter-current)
-		if [[ "$filter_current_session" == "true" ]]; then
-			(get_sorted_sessions | grep -Fxv "$CURRENT") || echo "$CURRENT"
-		else
-			(get_sorted_sessions) || echo "$CURRENT"
-		fi
-	fi
+	local sessions
+	sessions=$(get_sorted_sessions)
+
+	while IFS= read -r session; do
+		[[ -z "$session" ]] && continue
+		local window_count attached suffix
+		window_count=$(tmux list-windows -t "$session" 2>/dev/null | wc -l | tr -d ' ')
+		attached=$(tmux display-message -p -t "$session" "#{session_attached}" 2>/dev/null)
+		suffix=""
+		[[ "$attached" == "1" ]] && suffix=" (attached)"
+
+		printf "%s\t%s: %s windows%s\n" "$session" "$session" "$window_count" "$suffix"
+
+		tmux list-windows -t "$session" -F "#{window_index}|#{window_name}" 2>/dev/null | \
+			while IFS='|' read -r idx name; do
+				printf "%s:%s\t  ↳ %s\n" "$session" "$idx" "$name"
+			done
+	done <<< "$sessions"
 }
 
 additional_input() {
@@ -60,7 +67,7 @@ additional_input() {
 		add_path() {
 			local path=$1
 			if ! grep -q "$(basename "$path")" <<< "$sessions"; then
-				echo "$path"
+				printf "%s\t%s\n" "$path" "$path"
 			fi
 		}
 		export -f add_path
@@ -69,24 +76,18 @@ additional_input() {
 }
 
 handle_output() {
-	set -- "$(strip_git_branch_info "$*")"
-	if [ -d "$*" ]; then
-		# No special handling because there isn't a window number or window name present
-		# except in unlikely and contrived situations (e.g.
-		# "/home/person/projects:0\ bash" could be a path on your filesystem.)
-		target=$(echo "$@" | tr -d '\n')
-	elif is_fzf-marks_mark "$@" ; then
-		# Needs to run before session name mode
-		mark=$(get_fzf-marks_mark "$@")
-		target=$(get_fzf-marks_target "$@")
-	elif echo "$@" | grep ':' >/dev/null 2>&1; then
-		# Colon probably delimits session name and window number
-		session_name=$(echo "$@" | cut -d: -f1)
-		num=$(echo "$@" | cut -d: -f2 | cut -d' ' -f1)
-		target=$(echo "${session_name}:${num}" | tr -d '\n')
+	# First tab-delimited field is the raw tmux target (session or session:window_index)
+	# If no tab present (user typed a new name), the whole string is the target
+	local raw
+	raw=$(echo "$*" | cut -f1 | tr -d '\n')
+
+	if [ -d "$raw" ]; then
+		target="$raw"
+	elif is_fzf-marks_mark "$raw"; then
+		mark=$(get_fzf-marks_mark "$raw")
+		target=$(get_fzf-marks_target "$raw")
 	else
-		# All tokens represent a session name
-		target=$(echo "$@" | tr -d '\n')
+		target="$raw"
 	fi
 
 	if [[ -z "$target" ]]; then
