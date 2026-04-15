@@ -46,7 +46,8 @@ input() {
 
 		tmux list-windows -t "$session" -F "#{window_index}|#{window_name}" 2>/dev/null | \
 			while IFS='|' read -r idx name; do
-				printf "%s:%s\t  ↳ %s\n" "$session" "$idx" "$name"
+				indicator=$("$CURRENT_DIR/window_agent_state.sh" "$session:$idx")
+				printf "%s:%s\t  ↳ %s%s\n" "$session" "$idx" "$name" "$indicator"
 			done
 	done <<< "$sessions"
 }
