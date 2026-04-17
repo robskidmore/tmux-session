@@ -31,25 +31,65 @@ tmux_option_or_fallback() {
 }
 
 input() {
-	local sessions
-	sessions=$(get_sorted_sessions)
+	local filtered_sessions filter_regex=""
+	filtered_sessions=$(tmux show-option -gqv @sessionx-_filtered-sessions)
+	if [[ -n "$filtered_sessions" ]]; then
+		filter_regex="${filtered_sessions//,/|}"
+	fi
 
-	while IFS= read -r session; do
-		[[ -z "$session" ]] && continue
-		local window_count attached suffix
-		window_count=$(tmux list-windows -t "$session" 2>/dev/null | wc -l | tr -d ' ')
-		attached=$(tmux display-message -p -t "$session" "#{session_attached}" 2>/dev/null)
+	local -A pane_state=()
+	local env_line env_key env_val pid
+	while IFS= read -r env_line; do
+		env_key="${env_line%%=*}"
+		env_val="${env_line#*=}"
+		[[ "$env_key" == TMUX_AGENT_PANE_*_STATE ]] || continue
+		pid="${env_key#TMUX_AGENT_PANE_}"
+		pid="${pid%_STATE}"
+		pane_state[$pid]="$env_val"
+	done < <(tmux show-environment -g 2>/dev/null | grep '^TMUX_AGENT_PANE_')
+
+	local -A window_best_prio=() window_best_state=()
+	local sname widx pid_var state prio wkey
+	while IFS='|' read -r sname widx pid_var; do
+		state="${pane_state[$pid_var]:-}"
+		[[ -z "$state" ]] && continue
+		case "$state" in
+			needs-input) prio=2 ;;
+			running)     prio=1 ;;
+			done)        prio=0 ;;
+			*)           prio=-1 ;;
+		esac
+		wkey="$sname:$widx"
+		if [[ -z "${window_best_prio[$wkey]:-}" ]] || (( prio > window_best_prio[$wkey] )); then
+			window_best_prio[$wkey]=$prio
+			window_best_state[$wkey]=$state
+		fi
+	done < <(tmux list-panes -a -F '#{session_name}|#{window_index}|#{pane_id}' 2>/dev/null)
+
+	local -A session_windows_buf=()
+	local wname indicator
+	while IFS='|' read -r sname widx wname; do
+		wkey="$sname:$widx"
+		state="${window_best_state[$wkey]:-}"
+		indicator=""
+		case "$state" in
+			needs-input) indicator=$' \033[31m!\033[0m' ;;
+			running)     indicator=$' \033[33m…\033[0m' ;;
+			done)        indicator=$' \033[32m✓\033[0m' ;;
+		esac
+		session_windows_buf[$sname]+="$sname:$widx"$'\t'"  ↳ $wname$indicator"$'\n'
+	done < <(tmux list-windows -a -F '#{session_name}|#{window_index}|#{window_name}' 2>/dev/null)
+
+	local sid swindows sattached suffix
+	while IFS='|' read -r sid sname swindows sattached; do
+		if [[ -n "$filter_regex" ]] && [[ "$sname" =~ ($filter_regex) ]]; then
+			continue
+		fi
 		suffix=""
-		[[ "$attached" == "1" ]] && suffix=" (attached)"
-
-		printf "%s\t%s: %s windows%s\n" "$session" "$session" "$window_count" "$suffix"
-
-		tmux list-windows -t "$session" -F "#{window_index}|#{window_name}" 2>/dev/null | \
-			while IFS='|' read -r idx name; do
-				indicator=$("$CURRENT_DIR/window_agent_state.sh" "$session:$idx")
-				printf "%s:%s\t  ↳ %s%s\n" "$session" "$idx" "$name" "$indicator"
-			done
-	done <<< "$sessions"
+		[[ "$sattached" == "1" ]] && suffix=" (attached)"
+		printf "%s\t%s: %s windows%s\n" "$sname" "$sname" "$swindows" "$suffix"
+		printf "%s" "${session_windows_buf[$sname]:-}"
+	done < <(tmux list-sessions -F '#{session_id}|#{session_name}|#{session_windows}|#{session_attached}' 2>/dev/null | sort -n)
 }
 
 additional_input() {
